@@ -42,10 +42,14 @@ static ir_rx_context_t ir_rx_context;
 // from https://github.com/espressif/ESP8266_RTOS_SDK/issues/454
 extern uint32_t esp_get_time(void);
 
-static void ir_rx_timeout(void *arg) {
-    if ((ir_rx_context.state == ir_rx_state_idle) ||
-        (esp_get_time() - ir_rx_context.last_time < ir_rx_context.timeout))
+static void check_ir_received(void *arg) {
+    if ((ir_rx_context.state == ir_rx_state_idle)) {
         return;
+	}
+
+	static int val = 0;
+	val = !val;
+	gpio_set_level(GPIO_NUM_0, val);
 
     if (ir_rx_context.buffer_pos && (ir_rx_context.state != ir_rx_state_overflow)) {
         int16_t *pulses = malloc(sizeof(int16_t) * (ir_rx_context.buffer_pos + 1));
@@ -53,18 +57,16 @@ static void ir_rx_timeout(void *arg) {
             pulses[i] = ir_rx_context.buffer[i];
         pulses[ir_rx_context.buffer_pos] = 0;
 
-        #ifdef IR_DEBUG
-        ir_debug("Received raw pulses:\n");
+        printf("Received raw pulses:\n");
         for (int16_t i = 0, *p = pulses; *p; i++, p++) {
-            ir_debug1("%5d ", *p);
+            printf("%5d ", *p);
             if (i % 16 == 15)
-                ir_debug1("\n");
+                printf("\n");
         }
-        ir_debug1("\n");
+        printf("\n");
 
-        ir_debug("Queue length: %d\n",
+        printf("Queue length: %d\n",
                  (int)uxQueueMessagesWaiting(ir_rx_context.receive_queue));
-        #endif
 
         xQueueSendToBack(ir_rx_context.receive_queue, &pulses, 10);
     }
@@ -76,24 +78,30 @@ static void ir_rx_timeout(void *arg) {
 static void IRAM_ATTR ir_rx_interrupt_handler(uint8_t gpio_num) {
     uint32_t now = esp_get_time();
 
+	static int val = 0;
+
     switch (ir_rx_context.state) {
-        case ir_rx_state_idle:
-            break;
+		case ir_rx_state_idle:
+			break;
 
-    case ir_rx_state_mark: {
-            uint32_t us = now - ir_rx_context.last_time;
-            ir_rx_context.buffer[ir_rx_context.buffer_pos++] = us - ir_rx_context.excess;
-            break;
-        }
+		case ir_rx_state_mark: {
+			gpio_set_level(GPIO_NUM_0, 1);
+			uint32_t us = now - ir_rx_context.last_time;
+			ir_rx_context.buffer[ir_rx_context.buffer_pos++] = us - ir_rx_context.excess;
+			break;
+		}
 
-        case ir_rx_state_space: {
-            uint32_t us = now - ir_rx_context.last_time;
-            ir_rx_context.buffer[ir_rx_context.buffer_pos++] = -(us + ir_rx_context.excess);
-            break;
-        }
+		case ir_rx_state_space: {
+			gpio_set_level(GPIO_NUM_0, 0);
+			uint32_t us = now - ir_rx_context.last_time;
+			ir_rx_context.buffer[ir_rx_context.buffer_pos++] = -(us + ir_rx_context.excess);
+			break;
+		}
 
-        case ir_rx_state_overflow:
-            break;
+		case ir_rx_state_overflow:
+			val = !val;
+			gpio_set_level(GPIO_NUM_4, val);
+			break;
     }
 
     if (ir_rx_context.buffer_pos >= ir_rx_context.buffer_size) {
@@ -105,7 +113,6 @@ static void IRAM_ATTR ir_rx_interrupt_handler(uint8_t gpio_num) {
     ir_rx_context.last_time = now;
 }
 
-
 void ir_rx_init(uint8_t gpio, uint16_t rx_buffer_size) {
     ir_rx_context.gpio = gpio;
     ir_rx_context.excess = 0;
@@ -115,8 +122,8 @@ void ir_rx_init(uint8_t gpio, uint16_t rx_buffer_size) {
 
     ir_rx_context.state = ir_rx_state_idle;
     ir_rx_context.timeout = 20000;
-    os_timer_setfn(&ir_rx_context.timeout_timer, ir_rx_timeout, NULL);
-    os_timer_arm(&ir_rx_context.timeout_timer, 10, 1);
+    // os_timer_setfn(&ir_rx_context.timeout_timer, ir_rx_timeout, NULL);
+    // os_timer_arm(&ir_rx_context.timeout_timer, 1000, 1);
 
     ir_rx_context.receive_queue = xQueueCreate(10, sizeof(int16_t *));
     if (!ir_rx_context.receive_queue) {
@@ -127,6 +134,13 @@ void ir_rx_init(uint8_t gpio, uint16_t rx_buffer_size) {
     io_conf.intr_type = GPIO_INTR_ANYEDGE;
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pin_bit_mask = 1ULL << ir_rx_context.gpio;
+    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = 0;
+    gpio_config(&io_conf);
+
+	io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = 1ULL << GPIO_NUM_4 | 1ULL << GPIO_NUM_0 | 1u << GPIO_NUM_2;
     io_conf.pull_down_en = 0;
     io_conf.pull_up_en = 0;
     gpio_config(&io_conf);
@@ -145,9 +159,10 @@ int ir_recv(ir_decoder_t *decoder, uint32_t timeout, void *receive_buffer, uint1
     uint32_t start_time = esp_get_time();
     while (!timeout || (esp_get_time() - start_time) * portTICK_PERIOD_MS < timeout)
     {
-        int16_t *pulses = NULL;
 
+        int16_t *pulses = NULL;
         uint32_t time_left = portMAX_DELAY;
+
         if (timeout)
             time_left = (esp_get_time() - start_time) * portTICK_PERIOD_MS;
 
@@ -164,9 +179,16 @@ int ir_recv(ir_decoder_t *decoder, uint32_t timeout, void *receive_buffer, uint1
         if (r > 0) {
             return r;
         }
-        ir_debug("recv: got %d error code\n", r);
+        printf("recv: got %d error code\n", r);
     }
 
     // timed out
     return -1;
+}
+
+void ir_rx_loop(void)
+{
+	if ((esp_get_time() - ir_rx_context.last_time < ir_rx_context.timeout))
+		return;
+	check_ir_received(NULL);
 }

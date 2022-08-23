@@ -69,6 +69,8 @@ void ir_rx_set_excess(int16_t excess);
 int ir_recv(ir_decoder_t *decoder, uint32_t timeout, void *receive_buffer, uint16_t receive_buffer_size);
 
 
+void ir_rx_loop(void);
+
 #ifdef __cplusplus
 }
 #endif

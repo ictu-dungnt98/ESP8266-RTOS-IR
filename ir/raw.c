@@ -7,7 +7,7 @@
 
 #include <ir/tx.h>
 #include <ir/rx.h>
-
+#include <stdio.h>
 
 typedef struct {
   ir_encoder_t encoder;
@@ -53,6 +53,8 @@ int ir_raw_send(int16_t *widths, uint16_t count) {
 static int ir_raw_decode(ir_decoder_t *decoder, int16_t *pulses, uint16_t count,
                          void *decoded_data, uint16_t decoded_size)
 {
+	printf("%s\n", __func__);
+
     if (decoded_size < count * sizeof(int16_t))
         return -1;
 
