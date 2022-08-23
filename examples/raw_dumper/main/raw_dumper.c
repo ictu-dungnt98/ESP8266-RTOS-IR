@@ -6,18 +6,25 @@
 #include <ir/rx.h>
 #include <ir/raw.h>
 
+#include <ir/tx.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define IR_RX_GPIO 5
+
+int enable_receiver = 1;
 
 void ir_dump_task(void *arg) {
 
 	printf("dungnt98 ir raw dumper\n");
 
+    ir_tx_init();
     ir_rx_init(IR_RX_GPIO, 1024);
     ir_decoder_t *raw_decoder = ir_raw_make_decoder();
 
     uint16_t buffer_size = sizeof(int16_t) * 1024;
     int16_t *buffer = malloc(buffer_size);
+
     while (1) {
         int size = ir_recv(raw_decoder, 0, buffer, buffer_size);
         if (size <= 0) {
@@ -33,15 +40,24 @@ void ir_dump_task(void *arg) {
 
         if (size % 16)
             printf("\n");
+
+		enable_receiver = 0;
+		ir_raw_send(buffer, size);
+		memset(buffer, 0, buffer_size);
+		enable_receiver = 1;
+		vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
 void ir_receiver_task(void *arg) {
     while (1) {
-		ir_rx_loop();
+		if (enable_receiver == 1)
+			ir_rx_loop();	
+
 		vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
+
 void app_main()
 {
     xTaskCreate(ir_dump_task, "IR dump", 2048, NULL, tskIDLE_PRIORITY, NULL);
